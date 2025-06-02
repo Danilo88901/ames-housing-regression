@@ -1,0 +1,12 @@
+
+| Model                   | Mean MAE | Mean RMSE |
+|-------------------------|----------|-----------|
+| Linear Regression       | ~19,100  | ~28,560   |
+| RidgeCV                 | ~19,000  | ~28,550   |
+| Random Forest           | ~15,165  | ~22,139   |
+| XGBoost                 | ~14,356  | ~21,168   |
+| Kernel Ridge            | ~22,676  | ~32,965   |
+| Stacking (RF + XGB)     | ~16,060  | ~23,819   |
+| Stacking (Ridge + XGB)  | ~14,173  | ~20,958   |
+
+-
