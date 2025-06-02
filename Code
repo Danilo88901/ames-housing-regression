@@ -1,0 +1,276 @@
+#imports
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from sklearn.model_selection import KFold, cross_validate, RandomizedSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, RobustScaler, OneHotEncoder
+from sklearn.feature_selection import SelectFromModel
+
+from sklearn.linear_model import LinearRegression, RidgeCV
+from sklearn.ensemble import RandomForestRegressor, StackingRegressor
+from xgboost import XGBRegressor
+from sklearn.kernel_ridge import KernelRidge
+
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+# Для увеличения читаемости графиков
+sns.set_style('whitegrid')
+
+# ================================
+# 2. Загрузка и предварительное очищение данных
+# ================================
+
+# Загружаем датасет Ames Housing
+a = pd.read_csv('C:\\Users\\Liana\\Downloads\\Telegram Desktop\\AmesHousing.csv')
+
+# Убираем колонки, которые не нужны для модели
+# - SalePrice: целевая переменная
+# - Order, Condition 2_PosN: служебные или ненужные столбцы
+x = a.drop(columns=['SalePrice', 'Order', 'Condition 2'])
+y = a['SalePrice']
+
+# Убираем экстремальные значения SalePrice (<50k и >400k)
+mask = (y >= 50000) & (y <= 400000)
+x_filter = x.loc[mask].copy()
+y1 = y.loc[mask].copy()
+
+# ================================
+# 3. Заполнение пропусков и one-hot encoding
+# ================================
+
+# Split features on categorical and numerical
+cat_cols = x_filter.select_dtypes(include='object').columns
+num_cols = x_filter.select_dtypes(include=['int64', 'float64']).columns
+
+# Заполняем пропуски:
+# - в категориальных столбцах: строкой 'None'
+# - в числовых столбцах: медианой этого столбца
+x_filter[cat_cols] = x_filter[cat_cols].fillna('None')
+x_filter[num_cols] = x_filter[num_cols].fillna(x_filter[num_cols].median())
+
+# One-hot encoding for categorical features (drop_first=True)
+x1 = pd.get_dummies(x_filter, columns=cat_cols, drop_first=True)
+
+# ================================
+# 4.  EDA 
+# ================================
+
+# 4.1 Barplot: mean price by Neighborhood
+plt.figure(figsize=(8, 10))
+sns.barplot(x=a['SalePrice'], y=a['Neighborhood'], data=a, estimator=np.mean, ci=None)
+plt.title("Average SalePrice by Neighborhood")
+plt.xlabel("Average SalePrice")
+plt.ylabel("Neighborhood")
+plt.tight_layout()
+plt.show()
+
+# 4.2 Correlation GrLivArea и SalePrice
+grliv = a['Gr Liv Area']
+price = a['SalePrice']
+corr = np.corrcoef(grliv, price)[0, 1]
+print(f"Correlation between GrLivArea and SalePrice: {corr:.2f}")
+
+# 4.3 Histogram: Overall Quality
+plt.figure(figsize=(6, 4))
+plt.hist(a['Overall Qual'], bins=30, color='skyblue', edgecolor='black')
+plt.title("Histogram of Overall Quality")
+plt.xlabel("Overall Quality (1-10)")
+plt.ylabel("Count")
+plt.tight_layout()
+plt.savefig(os.path.join(save_dir, 'overall_quality_hist.png'))
+plt.show()
+
+# 4.4 Histogram: Overall Condition
+plt.figure(figsize=(6, 4))
+plt.hist(a['Overall Cond'], bins=30, color='salmon', edgecolor='black')
+plt.title("Histogram of Overall Condition")
+plt.xlabel("Overall Condition (1-10)")
+plt.ylabel("Count")
+plt.tight_layout()
+plt.savefig(os.path.join(save_dir, 'overall_condition.png'))
+plt.show()
+
+# 4.5 Boxplot: SalePrice vs Neighborhood
+plt.figure(figsize=(8, 10))
+sns.boxplot(x=a['SalePrice'], y=a['Neighborhood'], data=a)
+plt.title("SalePrice by Neighborhood")
+plt.xlabel("SalePrice")
+plt.ylabel("Neighborhood")
+plt.tight_layout()
+plt.savefig(os.path.join(save_dir, 'saleprice_neighborhood_boxplot.png'))
+plt.show()
+# 4.6 Heatmap
+p = a.drop(columns=['Order'])  # копия датасета без Order
+num_cols1 = p.select_dtypes(include=['int64', 'float64']).columns
+p[num_cols1] = p[num_cols1].fillna(p[num_cols1].median())  # заполняем пропуски
+
+corr_matrix = p[num_cols1].corr()
+plt.figure(figsize=(16, 12))
+sns.heatmap(corr_matrix, annot=True, fmt=".1f", cmap="Blues")
+plt.title("Correlation Matrix of Numerical Features")
+plt.tight_layout()
+plt.savefig(os.path.join(save_dir, 'feature_correlation_heatmap.png'))
+plt.show()
+
+print("Highest correlations with SalePrice: Overall Qual, GrLivArea (>= 0.7)")
+# ================================
+# 5. Отбор признаков через RandomForest (SelectFromModel)
+# ================================
+
+# Обучаем RandomForest на all-фичах x1, y1 (с дефолтными параметрами или слегка изменёнными)
+model_rf = RandomForestRegressor(n_estimators=150, random_state=42)
+model_rf.fit(x1, y1)
+
+# Using SelectFromModel
+selector = SelectFromModel(estimator=model_rf, threshold='mean', prefit=True)
+importances = model_rf.feature_importances_
+
+# Filtering features
+mask_selected = selector.get_support()
+important_features = x1.columns[mask_selected]
+important_importances = importances[mask_selected]
+
+# Creating dataset with 15 most important features
+importance_df = pd.DataFrame({
+    'feature': important_features,
+    'importance': important_importances
+}).sort_values(by='importance', ascending=False)
+
+#Take 15 most important features
+top_n = 15
+top_features = importance_df.head(top_n)['feature'].values
+
+# Forming dataset with the most important features
+x1_top15 = x1[top_features]
+
+#Visualisation of 15 most important features
+plt.figure(figsize=(8, 6))
+sns.barplot(x='importance', y='feature', data=importance_df.head(top_n), palette='viridis')
+plt.title("Top 15 Feature Importances (RandomForest)")
+plt.xlabel("Importance")
+plt.ylabel("Feature")
+plt.tight_layout()
+plt.show()
+
+# ================================
+# 6. 
+# ================================
+
+# Params for Cross Validation
+cv = KFold(n_splits=4, shuffle=True, random_state=42)
+scoring = {
+    'mae': 'neg_mean_absolute_error',
+    'mse': 'neg_mean_squared_error'
+}
+
+# --- 6.1 Linear Regression ---
+pipe_lr = Pipeline([
+    ('scale', StandardScaler()),
+    ('model', LinearRegression())
+])
+scores_lr = cross_validate(pipe_lr, x1_top15, y1, cv=cv, scoring=scoring)
+print("LinearRegression MAE:", -scores_lr['test_mae'])
+print("LinearRegression RMSE:", np.sqrt(-scores_lr['test_mse']))
+
+# --- 6.2 RidgeCV ---
+alphas = np.logspace(-6, 6, 12)
+pipe_ridge = Pipeline([
+    ('scale', StandardScaler()),
+    ('model', RidgeCV(alphas=alphas))
+])
+scores_ridge = cross_validate(pipe_ridge, x1_top15, y1, cv=cv, scoring=scoring)
+print("Ridge MAE:", -scores_ridge['test_mae'])
+print("Ridge RMSE:", np.sqrt(-scores_ridge['test_mse']))
+
+# --- 6.3 Random Forest (fine-tuned) ---
+model_rf_tuned = RandomForestRegressor(
+    n_estimators=800,
+    min_samples_split=3,
+    min_samples_leaf=2,
+    max_features='log2',
+    max_depth=None,
+    random_state=42
+)
+scores_rf = cross_validate(model_rf_tuned, x1_top15, y1, cv=cv, scoring=scoring)
+print("RandomForest MAE:", -scores_rf['test_mae'])
+print("RandomForest RMSE:", np.sqrt(-scores_rf['test_mse']))
+
+# --- 6.4 XGBoost (fine-tuned) ---
+model_xgb = XGBRegressor(
+    subsample=0.8,
+    max_depth=4,
+    learning_rate=0.1,
+    reg_lambda=0,
+    reg_alpha=8,
+    gamma=2,
+    n_estimators=1000,
+    random_state=42,
+    n_jobs=-1
+)
+scores_xgb = cross_validate(model_xgb, x1_top15, y1, cv=cv, scoring=scoring)
+print("XGBoost MAE:", -scores_xgb['test_mae'])
+print("XGBoost RMSE:", np.sqrt(-scores_xgb['test_mse']))
+
+# --- 6.5 Kernel Ridge ---
+pipe_kr = Pipeline([
+    ('scale', StandardScaler()),
+    ('model', KernelRidge(kernel='poly', degree=2, coef0=10, gamma=0.01, alpha=533.7))
+])
+scores_kr = cross_validate(pipe_kr, x1_top15, y1, cv=cv, scoring=scoring)
+print("KernelRidge MAE:", -scores_kr['test_mae'])
+print("KernelRidge RMSE:", np.sqrt(-scores_kr['test_mse']))
+
+# ================================
+# 7. Stacking моделей
+# ================================
+
+# --- 7.1 Stacking: XGBoost + RandomForest, meta-модель = XGBoost ---
+estimators_1 = [
+    ('xgb', XGBRegressor(
+        subsample=0.8, max_depth=4, learning_rate=0.1,
+        reg_lambda=0, reg_alpha=8, gamma=2, n_estimators=1000,
+        random_state=42, n_jobs=-1
+    )),
+    ('rf', RandomForestRegressor(
+        n_estimators=800, min_samples_split=3, min_samples_leaf=2,
+        max_features='log2', max_depth=None, random_state=42
+    ))
+]
+meta_model_1 = XGBRegressor(
+    subsample=0.8, max_depth=4, learning_rate=0.1,
+reg_lambda=0, reg_alpha=8, gamma=2, n_estimators=1000,
+    random_state=42, n_jobs=-1
+)
+stack_1 = StackingRegressor(estimators=estimators_1, final_estimator=meta_model_1, cv=cv, n_jobs=-1)
+scores_stack1 = cross_validate(stack_1, x1_top15, y1, cv=cv, scoring=scoring)
+print("Stacking RF+XGBoost MAE:", -scores_stack1['test_mae'])
+print("Stacking RF+XGBoost RMSE:", np.sqrt(-scores_stack1['test_mse']))
+
+# --- 7.2 Stacking: XGBoost + Ridge, meta-модель = Ridge ---
+estimators_2 = [
+    ('xgb', XGBRegressor(
+        subsample=0.8, max_depth=4, learning_rate=0.1,
+        reg_lambda=0, reg_alpha=8, gamma=2, n_estimators=1000,
+        random_state=42, n_jobs=-1
+    )),
+    ('ridge', Pipeline([
+        ('scale', StandardScaler()),
+        ('model', RidgeCV(alphas=alphas))
+    ]))
+]
+meta_model_2 = Pipeline([
+    ('scale', RobustScaler()),
+    ('model', RidgeCV(alphas=alphas))
+])
+stack_2 = StackingRegressor(estimators=estimators_2, final_estimator=meta_model_2, cv=cv, n_jobs=-1)
+scores_stack2 = cross_validate(stack_2, x1_top15, y1, cv=cv, scoring=scoring)
+print("Stacking XGBoost+Ridge MAE:", -scores_stack2['test_mae'])
+print("Stacking XGBoost+Ridge RMSE:", np.sqrt(-scores_stack2['test_mse']))
+
+# ================================
+# End
+# ================================
